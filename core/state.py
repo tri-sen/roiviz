@@ -14,7 +14,8 @@ from enum import Enum
 from typing import Any
 import uuid
 
-from core.models import AlignmentResult, InputSet
+from core.models import AlignmentResult, ComputedProfiles, InputSet
+
 
 
 class Phase(str, Enum):
@@ -72,6 +73,9 @@ class RunState:
     inputs_locked: bool = False
     alignment_locked: bool = False
 
+    computed_profiles: ComputedProfiles | None = None
+    profiles_locked: bool = False
+
     @classmethod
     def new(cls) -> "RunState":
         return cls(
@@ -83,4 +87,6 @@ class RunState:
             alignment_result=None,
             inputs_locked=False,
             alignment_locked=False,
+            computed_profiles=None,
+            profiles_locked=False,
         )

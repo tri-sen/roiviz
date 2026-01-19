@@ -23,6 +23,8 @@ from core.provenance import append_event
 from core.state import Phase, RunState
 from core.validation import validate_aa_sequence, validate_name
 from core.integrations.mafft import parse_aligned_fasta, run_mafft
+from core.profiles import HP, PR, HP_ID, PR_ID, compute_profiles_from_alignment
+
 
 
 class PipelineError(Exception):
@@ -150,3 +152,42 @@ def run_alignment(
         data={"alignment_length": alignment_length, "seq_count": len(aligned)},
         level="INFO",
     )
+
+def compute_profiles(run: RunState) -> None:
+    if run.alignment_result is None or not run.alignment_locked:
+        raise PipelineError("Alignment is not available. Run alignment first.")
+    if run.profiles_locked or run.computed_profiles is not None:
+        raise PipelineError("Profiles already computed for this run. Start a New run to recompute.")
+    if run.phase != Phase.VISUALIZATION:
+        raise PipelineError(f"Illegal state: phase must be VISUALIZATION (got {run.phase.value}).")
+
+    append_event(
+        run=run,
+        event="profiles_started",
+        data={"hp_scale": HP_ID, "pr_scale": PR_ID},
+        level="INFO",
+    )
+
+    profiles = compute_profiles_from_alignment(
+        alignment=run.alignment_result,
+        hp_scale=HP,
+        pr_scale=PR,
+        hp_scale_id=HP_ID,
+        pr_scale_id=PR_ID,
+    )
+
+    run.computed_profiles = profiles
+    run.profiles_locked = True
+
+    append_event(
+        run=run,
+        event="profiles_computed",
+        data={
+            "alignment_length": profiles.alignment_length,
+            "seq_count": len(run.alignment_result.sequences),
+            "pair_count": len(profiles.hp_pairwise_delta),
+        },
+        level="INFO",
+    )
+
+

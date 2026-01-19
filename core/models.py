@@ -120,3 +120,49 @@ class AlignmentResult:
     sequences: list[AlignedSequence]
     alignment_length: int
     created_at: datetime
+
+from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ComputedProfiles:
+    """
+    Computed profiles on alignment columns using normalized HP/PR scales.
+
+    Conventions:
+    - positions are 1-based alignment columns
+    - per-seq arrays contain float in [0,1] or None (unknown); GAP treated as 0.0 by compute layer
+    - pairwise deltas are absolute: |Δ| in [0,1]
+    """
+
+    computed_at: datetime
+    alignment_length: int
+    positions_1based: list[int]
+
+    hp_scale_id: str
+    pr_scale_id: str
+
+    # For debug / optional export
+    hp_per_seq: dict[str, list[float | None]]
+    pr_per_seq: dict[str, list[float | None]]
+
+    # Pairwise absolute deltas per pair key "seqA__vs__seqB"
+    hp_pairwise_delta: dict[str, list[float | None]]
+    pr_pairwise_delta: dict[str, list[float | None]]
+
+    # Summary over pairwise deltas (what Plot 1/2 use)
+    hp_delta_median: list[float | None]
+    hp_delta_p25: list[float | None]
+    hp_delta_p75: list[float | None]
+
+    pr_delta_median: list[float | None]
+    pr_delta_p25: list[float | None]
+    pr_delta_p75: list[float | None]
+
+    # Composition
+    gap_fraction: list[float]
+    composition_fraction: dict[str, list[float]]
+
+    method_name: str = "profiles_v1"
+    method_version: str | None = None
