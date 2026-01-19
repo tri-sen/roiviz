@@ -89,14 +89,9 @@ if "viz_uirevision" not in st.session_state:
 
 top_cols = st.columns([1, 2])
 with top_cols[0]:
-    if st.button("Reset X zoom (all plots)"):
+    if st.button("Reset X-Axis zoom (on all plots)"):
         st.session_state["viz_uirevision"] = str(uuid.uuid4())
         st.rerun()
-with top_cols[1]:
-    st.caption(
-        "Plot 1/2: pairwise |Δ| + median(|Δ|) with IQR band (P25–P75), y fixed [0,1]. "
-        "Plot 3: stacked AA/gap fractions, y fixed [0,1]."
-    )
 
 show_pairwise = st.checkbox("Show pairwise |Δ| lines (can be noisy)", value=True)
 show_summary = st.checkbox("Show median + IQR band (P25–P75)", value=True)
@@ -182,7 +177,7 @@ def _plot_delta(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Alignment column (1-based)",
+        xaxis_title="Position",
         yaxis_title=y_label,
         hovermode="x unified",
         hoverlabel=dict(namelength=-1),
@@ -196,47 +191,32 @@ def _plot_delta(
 
 
 # ---- Plot 1: |ΔHP|
-_tooltip_h3(
-    "Plot 1 — Pairwise Absolute Hydropathy Differences",
-    "Shows pairwise absolute differences |ΔHP| between all sequence pairs per alignment column. "
-    "Summary is median(|ΔHP|) with IQR band (P25–P75). Gaps are treated as value 0.",
-)
 fig_hp = _plot_delta(
     title=f"Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
     pairwise=p.hp_pairwise_delta,
     delta_median=p.hp_delta_median,
     delta_p25=p.hp_delta_p25,
     delta_p75=p.hp_delta_p75,
-    y_label="|ΔHP| (0..1)",
+    y_label="|ΔH| (pairwise, normalized)",
     pair_prefix="|ΔHP|",
 )
 st.plotly_chart(fig_hp, width="stretch")
 
 
 # ---- Plot 2: |ΔPR|
-_tooltip_h3(
-    "Plot 2 — Pairwise Absolute Polar Requirement Differences",
-    "Shows pairwise absolute differences |ΔPR| between all sequence pairs per alignment column. "
-    "Summary is median(|ΔPR|) with IQR band (P25–P75). Gaps are treated as value 0.",
-)
 fig_pr = _plot_delta(
     title=f"Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
     pairwise=p.pr_pairwise_delta,
     delta_median=p.pr_delta_median,
     delta_p25=p.pr_delta_p25,
     delta_p75=p.pr_delta_p75,
-    y_label="|ΔPR| (0..1)",
+    y_label="|ΔPR| (pairwise, normalized)",
     pair_prefix="|ΔPR|",
 )
 st.plotly_chart(fig_pr, width="stretch")
 
 
 # ---- Plot 3: composition (stacked) with a single hover carrier (no "null" spam)
-_tooltip_h3(
-    "Plot 3 — Composition (AA / gaps per column)",
-    "Shows per-column amino acid and gap fractions as stacked bars. "
-    "Hover shows only symbols present in that column (max N symbols).",
-)
 
 comp = p.composition_fraction
 
@@ -347,9 +327,9 @@ fig_c.add_trace(
 )
 
 fig_c.update_layout(
-    title="AA / gap composition per alignment column",
-    xaxis_title="Alignment column (1-based)",
-    yaxis_title="Fraction (0..1)",
+    title="Position-Specific Amino Acid Frequencies",
+    xaxis_title="Position",
+    yaxis_title="AA Frequencies",
     barmode="stack",
     hovermode="x unified",
     hoverlabel=dict(namelength=-1),
