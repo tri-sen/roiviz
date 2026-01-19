@@ -1,35 +1,23 @@
-"""
-Visualization page (UI-only skeleton).
-
-Rules:
-- UI-only rendering.
-- No heavy computation (profiles are computed in core/profiles via core/pipeline later).
-- Export is an option here (not a separate page), but disabled for now.
-
-Step 2 intent:
-- Show placeholders for plots, annotations, and export.
-"""
-
 from __future__ import annotations
 
 import streamlit as st
+
 from core.run_factory import create_new_run
 from ui.sidebar import render_sidebar
+
 
 def _get_run():
     return st.session_state.get("run")
 
 
-
-st.title("Step 3 — Visualization")
+st.title("Step 3 — Visualization (placeholder)")
 
 run = _get_run()
-render_sidebar(create_new_run)
 if run is None:
-    st.error("RunState is missing. Please go to the main page (app.py) to initialize a run.")
+    st.error("RunState is missing. Go to the main page (app.py) to initialize a run.")
     st.stop()
 
-st.caption("UI-only skeleton. No profile computation, no plots yet.")
+render_sidebar(create_new_run)
 
 st.subheader("Run status")
 st.json(
@@ -37,43 +25,31 @@ st.json(
         "run_id": run.run_id,
         "phase": run.phase.value,
         "event_count": len(run.events),
+        "inputs_committed": run.input_set is not None,
+        "alignment_done": run.alignment_result is not None,
     }
 )
 
-st.divider()
-st.subheader("Plots (placeholders)")
+if run.alignment_result is None:
+    st.warning("No alignment yet. Go to Step 2 and run MAFFT.")
+    st.stop()
 
-st.info(
-    "Planned plots (shared x-axis = alignment columns, 1-based):\n"
-    "- Hydropathy: median + IQR\n"
-    "- Polar requirement: median + IQR\n"
-    "- Composition: AA fractions + gap fraction"
+ar = run.alignment_result
+st.success("Alignment is available. Next step is profile computation (not implemented yet).")
+
+st.write("Alignment summary")
+st.json(
+    {
+        "alignment_length": ar.alignment_length,
+        "sequence_count": len(ar.sequences),
+        "tool_version": ar.execution.tool_version,
+        "duration_seconds": ar.execution.duration_seconds,
+    }
 )
 
-with st.expander("Annotations (planned)"):
-    st.markdown(
-        """
-- Region annotations in alignment-column coordinates (1-based, inclusive)
-- Create/delete annotations
-- Warning/label: annotations refer to alignment columns (including gaps)
-"""
-    )
+with st.expander("Aligned sequences (FASTA)", expanded=False):
+    for s in ar.sequences:
+        st.markdown(f"**{s.name}**")
+        st.code(s.aligned_sequence)
 
-st.divider()
-st.subheader("Actions (disabled in Step 2)")
-
-st.button(
-    "Compute profiles",
-    disabled=True,
-    help="Disabled: core/profiles + pipeline.compute_profiles() not implemented yet (Step 5).",
-)
-
-with st.expander("Export (disabled placeholder)"):
-    st.button(
-        "Create export bundle",
-        disabled=True,
-        help="Disabled: export integration not implemented yet (Step 6).",
-    )
-    st.caption("Export will include inputs, alignment, computed profiles, annotations, and the reproducibility log.")
-
-st.caption("Next: implement compute_profiles + plotting + export in later steps.")
+st.info("Next: implement ComputedProfiles + plots + export on this page.")

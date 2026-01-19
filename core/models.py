@@ -1,5 +1,5 @@
 """
-Core DTOs (Step 3 foundation).
+Core DTOs.
 
 Rules:
 - Pure data containers only (no validation/parsing logic here).
@@ -9,7 +9,7 @@ Rules:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -34,8 +34,8 @@ class InputEntry:
     A single committed amino-acid sequence entry.
 
     Notes:
-- `aa_sequence` is expected to be normalized (uppercase, stripped).
-- Validation happens in core/validation.py, not here.
+    - `aa_sequence` is expected to be normalized (uppercase, stripped).
+    - Validation happens in core/validation.py, not here.
     """
 
     entry_id: str
@@ -55,3 +55,68 @@ class InputSet:
 
     entries: list[InputEntry]
     committed_at: datetime
+
+
+# -------------------------
+# Alignment DTOs (Step 4 foundation)
+# -------------------------
+
+@dataclass(frozen=True, slots=True)
+class AlignmentParams:
+    """
+    Alignment tool parameters as actually used for a run.
+
+    MVP: MAFFT v7 only.
+    - args: CLI arguments (excluding input/output handling).
+    """
+
+    tool: str = "mafft"
+    threads: int = 1
+    args: list[str] = field(default_factory=list)
+    label: str | None = None  # e.g. "recommended", "custom"
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentExecution:
+    """
+    Structured execution record for an integration call.
+
+    Store previews only in state (avoid multi-MB logs).
+    """
+
+    command: list[str]
+    started_at: datetime
+    finished_at: datetime
+    return_code: int
+
+    stdout_preview: str | None = None
+    stderr_preview: str | None = None
+
+    tool_name: str = "mafft"
+    tool_version: str | None = None
+    duration_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlignedSequence:
+    """
+    One aligned sequence (FASTA-like record) after alignment.
+    """
+
+    seq_id: str
+    name: str
+    aligned_sequence: str
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlignmentResult:
+    """
+    Output of the alignment step.
+    """
+
+    params: AlignmentParams
+    execution: AlignmentExecution
+    sequences: list[AlignedSequence]
+    alignment_length: int
+    created_at: datetime

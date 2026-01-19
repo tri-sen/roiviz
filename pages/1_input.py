@@ -68,7 +68,7 @@ if run.input_set is not None:
     st.write("Committed entries:")
     st.dataframe(
         [{"name": e.name, "length": len(e.aa_sequence), "source": e.source.value} for e in run.input_set.entries],
-        use_container_width=True,
+        width="stretch",
     )
     st.stop()
 

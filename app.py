@@ -52,7 +52,7 @@ def main() -> None:
     )
 
     st.subheader("All events")
-    st.dataframe([e.to_dict() for e in run.events], use_container_width=True)
+    st.dataframe([e.to_dict() for e in run.events], width="stretch")
 
 
 if __name__ == "__main__":
