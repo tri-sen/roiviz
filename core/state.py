@@ -1,10 +1,11 @@
 """
-Core state model (Step 1).
+Core state model (Step 1 + Step 3 foundation).
 
 Rules:
 - core/ must not import streamlit.
 - RunState is the single source of truth, stored by the UI under st.session_state["run"].
-- Step 1: we only model run identity, phase, and an in-memory append-only event log.
+- Step 1: run identity + phase + in-memory append-only event log.
+- Step 3 foundation: add InputSet slot and a simple lock for committed inputs.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 import uuid
+
+from core.models import InputSet
 
 
 class Phase(str, Enum):
@@ -50,17 +53,24 @@ class RunState:
     """
     Single-run state for one analysis session.
 
-    Step 1 fields:
-    - run_id: new UUID per run
-    - phase: starts in INPUT
-    - events: append-only list of LogEvent
+    Fields:
+    - run identity + phase
+    - append-only in-memory events
+    - committed artifacts (start with InputSet)
     """
 
     run_id: str
     created_at_utc: datetime
     phase: Phase = Phase.INPUT
 
+    # Append-only reproducibility log (in-memory)
     events: list[LogEvent] = field(default_factory=list)
+
+    # Committed artifacts (Step 3 begins here)
+    input_set: InputSet | None = None
+
+    # Simple single-run locks
+    inputs_locked: bool = False
 
     @classmethod
     def new(cls) -> "RunState":
@@ -69,4 +79,6 @@ class RunState:
             created_at_utc=datetime.now(timezone.utc),
             phase=Phase.INPUT,
             events=[],
+            input_set=None,
+            inputs_locked=False,
         )

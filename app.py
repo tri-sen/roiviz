@@ -1,39 +1,30 @@
+# app.py
 """
-Streamlit entry point (Step 1).
+Streamlit entry point.
 
 Responsibilities:
 - Initialize exactly one RunState in st.session_state["run"].
-- Append exactly one 'session_start' event per new run_id (no rerun spam).
-- Provide sidebar controls: show run_id/phase, "New run", log preview + JSONL download.
+- Render the shared sidebar on this page as well.
+- Provide a minimal "app" home view showing run summary + full event table.
 
-Non-negotiable:
-- No business logic (no MAFFT, no profiles).
-- Side effects must be explicit. Logging is in-memory only in Step 1.
+Notes:
+- All sidebar UI is centralized in pages/sidebar.py.
+- Run creation + mandatory session_start logging is centralized in core/run_factory.py.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from core.provenance import append_event, export_events_jsonl, session_start_payload
+from core.run_factory import create_new_run
 from core.state import RunState
-
-
-def _create_new_run() -> RunState:
-    run = RunState.new()
-    append_event(
-        run=run,
-        event="session_start",
-        data=session_start_payload(),
-        level="INFO",
-    )
-    return run
+from ui.sidebar import render_sidebar
 
 
 def _get_run() -> RunState:
     run = st.session_state.get("run")
     if run is None:
-        run = _create_new_run()
+        run = create_new_run()
         st.session_state["run"] = run
     return run
 
@@ -43,45 +34,24 @@ def main() -> None:
 
     run = _get_run()
 
-    with st.sidebar:
-        st.header("Run")
-        st.write(f"run_id: `{run.run_id}`")
-        st.write(f"phase: `{run.phase.value}`")
+    # Shared sidebar (available on all pages)
+    render_sidebar(create_new_run)
 
-        if st.button("New run", type="primary"):
-            st.session_state["run"] = _create_new_run()
-            st.rerun()
+    st.title("roiviz")
+    st.info("Foundation: RunState + in-memory reproducibility log. No MAFFT/profiles/export yet (except log download).")
 
-        st.divider()
-        st.subheader("Reproducibility log")
-        st.caption("In-memory log (append-only). Logged only on explicit actions.")
-
-        # Show a small preview
-        preview = [e.to_dict() for e in run.events[-10:]]
-        st.json(preview)
-
-        # Download full JSONL
-        jsonl_text = export_events_jsonl(run.events)
-        st.download_button(
-            label="Download log (JSONL)",
-            data=jsonl_text.encode("utf-8"),
-            file_name=f"provenance_{run.run_id}.jsonl",
-            mime="application/jsonl",
-        )
-
-    st.title("roiviz — Step 1")
-    st.info("Foundation only: RunState + in-memory reproducibility log. No MAFFT/profiles yet.")
-
-    st.write("Current run summary:")
+    st.subheader("Current run summary")
     st.json(
         {
             "run_id": run.run_id,
             "phase": run.phase.value,
+            "created_at_utc": run.created_at_utc.isoformat(timespec="seconds"),
             "event_count": len(run.events),
+            "inputs_committed": run.input_set is not None,
         }
     )
 
-    st.write("All events:")
+    st.subheader("All events")
     st.dataframe([e.to_dict() for e in run.events], use_container_width=True)
 
 

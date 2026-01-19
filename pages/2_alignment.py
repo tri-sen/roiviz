@@ -14,17 +14,23 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.run_factory import create_new_run
+from ui.sidebar import render_sidebar
+
 
 def _get_run():
     return st.session_state.get("run")
 
-
 st.title("Step 2 — Alignment")
+
 
 run = _get_run()
 if run is None:
     st.error("RunState is missing. Please go to the main page (app.py) to initialize a run.")
     st.stop()
+
+render_sidebar(create_new_run)
+
 
 st.caption("UI-only skeleton. No MAFFT execution yet.")
 
