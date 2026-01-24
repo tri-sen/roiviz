@@ -138,7 +138,7 @@ class ComputedProfiles:
 
     computed_at: datetime
     alignment_length: int
-    positions_1based: list[int]
+    aa_position: list[int]
 
     hp_scale_id: str
     pr_scale_id: str

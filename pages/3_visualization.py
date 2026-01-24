@@ -83,7 +83,7 @@ if run.computed_profiles is None:
     st.stop()
 
 p = run.computed_profiles
-x = p.positions_1based
+x = p.aa_position
 
 if "viz_uirevision" not in st.session_state:
     st.session_state["viz_uirevision"] = "keep"
@@ -245,7 +245,7 @@ def _plot_delta(
 
 # ---- Plot 1 ----
 _plot_header_with_info(
-    f"Plot 1 — Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
+    f"Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
     (
         "**What this shows**  \n"
         "- For each alignment column: pairwise absolute differences **|ΔHP|** between all sequence pairs.  \n"
@@ -265,7 +265,7 @@ st.plotly_chart(fig_hp, width="stretch")
 
 # ---- Plot 2 ----
 _plot_header_with_info(
-    f"Plot 2 — Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
+    f"Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
     (
         "**What this shows**  \n"
         "- For each alignment column: pairwise absolute differences **|ΔPR|** between all sequence pairs.  \n"
@@ -285,11 +285,11 @@ st.plotly_chart(fig_pr, width="stretch")
 
 # ---- Plot 3 ----
 _plot_header_with_info(
-    "Plot 3 — Position-Specific Amino Acid Frequencies",
+    "Amino Acid Frequencies per Alignment Position",
     (
         "**What this shows**  \n"
-        "- For each alignment column: stacked fractions of **amino acids + gaps**.  \n"
-        "- Hover lists only symbols actually present at that position and which sequences contribute them.  \n"
+        "- For each alignment position, the stacked bar shows the relative frequencies of amino acids (and gaps) observed at that position.  \n"
+        "- Hover lists only show amino acids actually present at that position and which sequences contribute them.  \n"
         "- Gap bars are **grey with 30% opacity**."
     ),
 )

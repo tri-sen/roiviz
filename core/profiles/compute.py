@@ -163,7 +163,7 @@ def compute_profiles_from_alignment(
     return ComputedProfiles(
         computed_at=_utc_now(),
         alignment_length=L,
-        positions_1based=positions,
+        aa_position=positions,
         hp_scale_id=hp_scale_id,
         pr_scale_id=pr_scale_id,
         hp_per_seq=hp_per_seq,
