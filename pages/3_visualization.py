@@ -6,18 +6,14 @@ import uuid
 import plotly.graph_objects as go
 import streamlit as st
 
+from core.export_bundle import build_export_zip_bytes
 from core.pipeline import PipelineError, compute_profiles
 from core.run_factory import create_new_run
+from core.run_log import run_log
 from ui.sidebar import render_sidebar
 
 
-def _tooltip_h3(text: str, tooltip: str) -> None:
-    # Streamlit has no native "tooltip on header", so use HTML title.
-    st.markdown(f'<h3 title="{tooltip}">{text}</h3>', unsafe_allow_html=True)
-
-
 def _pair_label(pair_key: str) -> str:
-    # pair_key format: "seqA__vs__seqB"
     a, b = pair_key.split("__vs__", 1)
     return f"{a}–{b}"
 
@@ -31,25 +27,26 @@ def _cap_list(items: list[str], limit: int = 12) -> str:
     return f"{head}, … (+{len(items) - limit})"
 
 
-# ---- Layout helpers: keep visual plot widths aligned across Plot 1/2/3 ----
-LEGEND_SLOT_R = 340  # fixed right space (px-ish) reserved for legend on ALL plots
+def _plot_header_with_info(title: str, info_md: str) -> None:
+    st.markdown(f"##### {title}")
+    with st.expander("ℹ️ What this shows", expanded=False):
+        st.markdown(info_md)
 
 
-def apply_right_legend_slot(fig: go.Figure) -> None:
+def apply_top_legend(fig: go.Figure) -> None:
     """
-    Reserve a fixed right margin so the plot area (x-axis visual width)
-    remains equal across figures, even if legends differ in content.
+    Put legend above the plot area (outside the plotting region).
     """
     fig.update_layout(
         legend=dict(
-            x=1.02,
+            orientation="h",
+            x=0.0,
             xanchor="left",
-            y=1.0,
-            yanchor="top",
-            itemsizing="constant",
+            y=1.18,
+            yanchor="bottom",
             traceorder="normal",
         ),
-        margin=dict(l=60, r=LEGEND_SLOT_R, t=60, b=60),
+        margin=dict(l=60, r=30, t=95, b=60),
     )
 
 
@@ -69,7 +66,11 @@ if run.alignment_result is None:
 
 if run.computed_profiles is None:
     st.info("Profiles not computed yet.")
-    if st.button("Compute profiles", type="primary"):
+    if st.button(
+        "Compute profiles",
+        type="primary",
+        help="Compute |Δ| profiles + composition from the alignment.",
+    ):
         try:
             with st.spinner("Computing profiles..."):
                 compute_profiles(run)
@@ -82,19 +83,74 @@ if run.computed_profiles is None:
     st.stop()
 
 p = run.computed_profiles
-x = p.positions_1based  # 1-based alignment columns
+x = p.positions_1based
 
 if "viz_uirevision" not in st.session_state:
     st.session_state["viz_uirevision"] = "keep"
 
-top_cols = st.columns([1, 2])
-with top_cols[0]:
-    if st.button("Reset X-Axis zoom (on all plots)"):
+# ---- Top controls (zoom + export) ----
+controls = st.columns([1, 1], vertical_alignment="center")
+
+with controls[0]:
+    if st.button(
+        "Reset X-Axis zoom (on all plots)",
+        help="Resets zoom/pan state for all plots.",
+    ):
         st.session_state["viz_uirevision"] = str(uuid.uuid4())
         st.rerun()
 
-show_pairwise = st.checkbox("Show pairwise |Δ| lines (can be noisy)", value=True)
-show_summary = st.checkbox("Show median + IQR band (P25–P75)", value=True)
+with controls[1]:
+    with st.expander("Export (ZIP)", expanded=False):
+        st.markdown(
+            "- Generates a ZIP **in-memory** (no persistence) containing CSVs + FASTA + provenance.\n"
+            "- The bundle is a snapshot of the **current run state**."
+        )
+
+        build_clicked = st.button("Build export bundle", type="primary")
+        if build_clicked:
+            # Log BEFORE build so provenance includes the export action
+            run_log(
+                run,
+                "export_requested",
+                {"page": "visualization", "kind": "zip_bundle"},
+            )
+
+            try:
+                with st.spinner("Building export ZIP..."):
+                    zip_bytes = build_export_zip_bytes(run)
+
+                st.success(f"Export bundle built ({len(zip_bytes):,} bytes).")
+
+                st.download_button(
+                    label="Download export ZIP",
+                    data=zip_bytes,
+                    file_name=f"roiviz_export_{run.run_id}.zip",
+                    mime="application/zip",
+                )
+            except Exception as e:  # noqa: BLE001
+                run_log(
+                    run,
+                    "export_failed",
+                    {"error": str(e)},
+                    level="ERROR",
+                )
+                st.error(f"Export failed: {e}")
+
+st.caption(
+    "Plot 1/2: pairwise |Δ| + median(|Δ|) with IQR band (P25–P75), y fixed [0,1]. "
+    "Plot 3: stacked AA/gap fractions, y fixed [0,1]."
+)
+
+show_pairwise = st.checkbox(
+    "Show pairwise |Δ| lines (can be noisy)",
+    value=True,
+    help="Shows one line per sequence-pair (can become visually dense).",
+)
+show_summary = st.checkbox(
+    "Show median + IQR band (P25–P75)",
+    value=True,
+    help="Median(|Δ|) and IQR band across all pairwise |Δ| lines per column.",
+)
 
 
 def _add_iqr_band_and_median(
@@ -105,7 +161,6 @@ def _add_iqr_band_and_median(
     p75: list[float | None],
     median_name: str,
 ) -> None:
-    # Upper bound (hidden in legend) -> then lower bound filled to it -> IQR band
     fig.add_trace(
         go.Scatter(
             x=x,
@@ -139,13 +194,12 @@ def _add_iqr_band_and_median(
 
 def _plot_delta(
     *,
-    title: str,
     pairwise: dict[str, list[float | None]],
     delta_median: list[float | None],
     delta_p25: list[float | None],
     delta_p75: list[float | None],
     y_label: str,
-    pair_prefix: str,  # "|ΔHP|" or "|ΔPR|"
+    pair_prefix: str,
 ) -> go.Figure:
     fig = go.Figure()
 
@@ -176,7 +230,6 @@ def _plot_delta(
         )
 
     fig.update_layout(
-        title=title,
         xaxis_title="Position",
         yaxis_title=y_label,
         hovermode="x unified",
@@ -186,26 +239,41 @@ def _plot_delta(
         uirevision=st.session_state["viz_uirevision"],
         showlegend=True,
     )
-    apply_right_legend_slot(fig)
+    apply_top_legend(fig)
     return fig
 
 
-# ---- Plot 1: |ΔHP|
+# ---- Plot 1 ----
+_plot_header_with_info(
+    f"Plot 1 — Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
+    (
+        "**What this shows**  \n"
+        "- For each alignment column: pairwise absolute differences **|ΔHP|** between all sequence pairs.  \n"
+        "- Summary: **Median(|ΔHP|)** with **IQR band (P25–P75)** across all pairs.  \n"
+        "- **Gaps are treated as value 0** for HP."
+    ),
+)
 fig_hp = _plot_delta(
-    title=f"Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
     pairwise=p.hp_pairwise_delta,
     delta_median=p.hp_delta_median,
     delta_p25=p.hp_delta_p25,
     delta_p75=p.hp_delta_p75,
-    y_label="|ΔH| (pairwise, normalized)",
+    y_label="|ΔHP| (pairwise, normalized)",
     pair_prefix="|ΔHP|",
 )
 st.plotly_chart(fig_hp, width="stretch")
 
-
-# ---- Plot 2: |ΔPR|
+# ---- Plot 2 ----
+_plot_header_with_info(
+    f"Plot 2 — Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
+    (
+        "**What this shows**  \n"
+        "- For each alignment column: pairwise absolute differences **|ΔPR|** between all sequence pairs.  \n"
+        "- Summary: **Median(|ΔPR|)** with **IQR band (P25–P75)** across all pairs.  \n"
+        "- **Gaps are treated as value 0** for PR."
+    ),
+)
 fig_pr = _plot_delta(
-    title=f"Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
     pairwise=p.pr_pairwise_delta,
     delta_median=p.pr_delta_median,
     delta_p25=p.pr_delta_p25,
@@ -215,12 +283,19 @@ fig_pr = _plot_delta(
 )
 st.plotly_chart(fig_pr, width="stretch")
 
-
-# ---- Plot 3: composition (stacked) with a single hover carrier (no "null" spam)
+# ---- Plot 3 ----
+_plot_header_with_info(
+    "Plot 3 — Position-Specific Amino Acid Frequencies",
+    (
+        "**What this shows**  \n"
+        "- For each alignment column: stacked fractions of **amino acids + gaps**.  \n"
+        "- Hover lists only symbols actually present at that position and which sequences contribute them.  \n"
+        "- Gap bars are **grey with 30% opacity**."
+    ),
+)
 
 comp = p.composition_fraction
 
-# Stable alphabet = observed AAs sorted + gap at end if present
 aa_gap_alphabet = [sym for sym, ys in comp.items() if any(v > 0.0 for v in ys)]
 aa_gap_alphabet = sorted([sym for sym in aa_gap_alphabet if sym != "-"])
 if "-" in comp and any(v > 0.0 for v in comp["-"]):
@@ -256,7 +331,6 @@ seq_names = [s.name for s in aligned.sequences]
 seq_strings = [s.aligned_sequence for s in aligned.sequences]
 L = aligned.alignment_length
 
-# column_symbol_to_names[i][sym] -> list of sequence names
 column_symbol_to_names: list[dict[str, list[str]]] = []
 for col in range(L):
     m: dict[str, list[str]] = {}
@@ -269,7 +343,6 @@ for col in range(L):
 
 fig_c = go.Figure()
 
-# Bars: no hover (prevents unified-hover "null" spam)
 for sym in aa_gap_alphabet:
     yvals = comp[sym]
     if sym == "-":
@@ -293,7 +366,6 @@ for sym in aa_gap_alphabet:
             )
         )
 
-# Hover carrier: one hover box per column listing ONLY present symbols
 hover_per_col: list[str] = []
 for i, pos in enumerate(x):
     lines = [f"<b>Position {pos}</b>"]
@@ -303,7 +375,7 @@ for i, pos in enumerate(x):
         names_here = column_symbol_to_names[i].get(sym, [])
         if not names_here:
             continue
-        frac = comp[sym][i]  # display only
+        frac = comp[sym][i]
         label = "gap" if sym == "-" else sym
         present.append((label, frac, names_here))
 
@@ -317,7 +389,7 @@ for i, pos in enumerate(x):
 fig_c.add_trace(
     go.Scatter(
         x=x,
-        y=[1.0] * len(x),  # arbitrary; invisible anyway
+        y=[1.0] * len(x),
         mode="markers",
         marker=dict(opacity=0.0, size=8),
         showlegend=False,
@@ -327,7 +399,6 @@ fig_c.add_trace(
 )
 
 fig_c.update_layout(
-    title="Position-Specific Amino Acid Frequencies",
     xaxis_title="Position",
     yaxis_title="AA Frequencies",
     barmode="stack",
@@ -338,6 +409,5 @@ fig_c.update_layout(
     uirevision=st.session_state["viz_uirevision"],
     showlegend=True,
 )
-apply_right_legend_slot(fig_c)
-
+apply_top_legend(fig_c)
 st.plotly_chart(fig_c, width="stretch")

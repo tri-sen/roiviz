@@ -1,5 +1,6 @@
+# core/state.py
 """
-Core state model (Step 1 + Step 3 + Step 4 foundation).
+Core state model.
 
 Rules:
 - core/ must not import streamlit.
@@ -14,8 +15,13 @@ from enum import Enum
 from typing import Any
 import uuid
 
+
 from core.models import AlignmentResult, ComputedProfiles, InputSet
 
+
+def utc_now() -> datetime:
+    """Timezone-aware UTC timestamp helper."""
+    return datetime.now(timezone.utc)
 
 
 class Phase(str, Enum):
@@ -38,6 +44,10 @@ class LogEvent:
     event: str
     data: dict[str, Any]
 
+    @classmethod
+    def now(cls, *, level: str, event: str, data: dict[str, Any]) -> "LogEvent":
+        return cls(ts_utc=utc_now(), level=level, event=event, data=data)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "ts": self.ts_utc.isoformat(timespec="seconds"),
@@ -51,11 +61,6 @@ class LogEvent:
 class RunState:
     """
     Single-run state for one analysis session.
-
-    Fields:
-    - run identity + phase
-    - append-only in-memory events
-    - committed artifacts (inputs, then alignment, then profiles later)
     """
 
     run_id: str
@@ -68,25 +73,21 @@ class RunState:
     # Committed artifacts
     input_set: InputSet | None = None
     alignment_result: AlignmentResult | None = None
+    computed_profiles: ComputedProfiles | None = None
 
     # Simple single-run locks
     inputs_locked: bool = False
     alignment_locked: bool = False
-
-    computed_profiles: ComputedProfiles | None = None
     profiles_locked: bool = False
 
     @classmethod
     def new(cls) -> "RunState":
         return cls(
             run_id=uuid.uuid4().hex,
-            created_at_utc=datetime.now(timezone.utc),
+            created_at_utc=utc_now(),
             phase=Phase.INPUT,
-            events=[],
-            input_set=None,
-            alignment_result=None,
-            inputs_locked=False,
-            alignment_locked=False,
-            computed_profiles=None,
-            profiles_locked=False,
         )
+
+    def log(self, *, event: str, data: dict[str, Any] | None = None, level: str = "INFO") -> None:
+        """Single entry point: adds timestamp automatically."""
+        self.events.append(LogEvent.now(level=level, event=event, data=data or {}))
