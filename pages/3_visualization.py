@@ -2,15 +2,28 @@
 from __future__ import annotations
 
 import uuid
+from uuid import uuid4
 
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
+from core.annotations import (
+    AminoAcidNote,
+    RegionalAnnotation,
+    build_aa_note_block,
+    lane_assign,
+    normalize_aa_key,
+)
 from core.export_bundle import build_export_zip_bytes
 from core.pipeline import PipelineError, compute_profiles
 from core.run_factory import create_new_run
 from core.run_log import run_log
 from ui.sidebar import render_sidebar
+
+
+AA20 = list("ACDEFGHIKLMNPQRSTVWY")
+GAP = "-"
 
 
 def _pair_label(pair_key: str) -> str:
@@ -27,16 +40,7 @@ def _cap_list(items: list[str], limit: int = 12) -> str:
     return f"{head}, … (+{len(items) - limit})"
 
 
-def _plot_header_with_info(title: str, info_md: str) -> None:
-    st.markdown(f"##### {title}")
-    with st.expander("ℹ️ What this shows", expanded=False):
-        st.markdown(info_md)
-
-
 def apply_top_legend(fig: go.Figure) -> None:
-    """
-    Put legend above the plot area (outside the plotting region).
-    """
     fig.update_layout(
         legend=dict(
             orientation="h",
@@ -48,6 +52,43 @@ def apply_top_legend(fig: go.Figure) -> None:
         ),
         margin=dict(l=60, r=30, t=95, b=60),
     )
+
+
+def _truncate_label(text: str, max_chars: int) -> str:
+    t = (text or "").strip()
+    if max_chars <= 0:
+        return ""
+    if len(t) <= max_chars:
+        return t
+    if max_chars <= 2:
+        return ".."
+    return t[: max_chars - 2] + ".."
+
+
+def _regions_covering_position(regs: list[RegionalAnnotation], pos: int) -> list[RegionalAnnotation]:
+    return [r for r in regs if r.start <= pos <= r.end]
+
+
+def _format_region_hover_block(regs: list[RegionalAnnotation]) -> str:
+    if not regs:
+        return "Regional annotation: —"
+    regs_sorted = sorted(regs, key=lambda r: (r.start, r.end, r.text, r.ann_id))
+    lines = ["Regional annotation:"]
+    for r in regs_sorted:
+        lines.append(f"start: {r.start}<br>end: {r.end}<br>note: {r.text}")
+    return "<br>".join(lines)
+
+
+def _plot_header(title: str, info_md: str, *, show_titles: bool, show_infos: bool) -> None:
+    """
+    Optional header + optional 'what this shows' expander.
+    When disabled, this emits nothing so plots pack tighter vertically.
+    """
+    if show_titles:
+        st.markdown(f"##### {title}")
+    if show_infos:
+        with st.expander("ℹ️ What this shows", expanded=False):
+            st.markdown(info_md)
 
 
 # ---- Page ----
@@ -83,7 +124,11 @@ if run.computed_profiles is None:
     st.stop()
 
 p = run.computed_profiles
-x = p.aa_position
+
+x = getattr(p, "positions_1based", None) or getattr(p, "aa_position", None)
+if not isinstance(x, list) or not x:
+    st.error("ComputedProfiles has no positions list (positions_1based / aa_position).")
+    st.stop()
 
 if "viz_uirevision" not in st.session_state:
     st.session_state["viz_uirevision"] = "keep"
@@ -108,13 +153,7 @@ with controls[1]:
 
         build_clicked = st.button("Build export bundle", type="primary")
         if build_clicked:
-            # Log BEFORE build so provenance includes the export action
-            run_log(
-                run,
-                "export_requested",
-                {"page": "visualization", "kind": "zip_bundle"},
-            )
-
+            run_log(run, "export_requested", {"page": "visualization", "kind": "zip_bundle"})
             try:
                 with st.spinner("Building export ZIP..."):
                     zip_bytes = build_export_zip_bytes(run)
@@ -128,17 +167,21 @@ with controls[1]:
                     mime="application/zip",
                 )
             except Exception as e:  # noqa: BLE001
-                run_log(
-                    run,
-                    "export_failed",
-                    {"error": str(e)},
-                    level="ERROR",
-                )
+                run_log(run, "export_failed", {"error": str(e)}, level="ERROR")
                 st.error(f"Export failed: {e}")
+
+# ---- Display density toggles (pack plots tighter) ----
+density = st.columns([1, 1, 2], vertical_alignment="center")
+with density[0]:
+    show_plot_titles = st.checkbox("Show plot titles", value=True)
+with density[1]:
+    show_plot_infos = st.checkbox("Show 'What this shows'", value=False)
+with density[2]:
+    st.caption("Disable titles/infos to reduce vertical spacing and compare plots more easily.")
 
 st.caption(
     "Plot 1/2: pairwise |Δ| + median(|Δ|) with IQR band (P25–P75), y fixed [0,1]. "
-    "Plot 3: stacked AA/gap fractions, y fixed [0,1]."
+    "Plot 3: stacked AA/gap fractions + regional annotation track, y fixed [0,1]."
 )
 
 show_pairwise = st.checkbox(
@@ -152,7 +195,110 @@ show_summary = st.checkbox(
     help="Median(|Δ|) and IQR band across all pairwise |Δ| lines per column.",
 )
 
+# ---- Annotations UI ----
+with st.expander("Annotations", expanded=False):
+    aln = run.alignment_result
+    aln_len = int(getattr(aln, "alignment_length", len(x)))
 
+    st.markdown("**Regional annotations (intervals)**")
+    col_ra = st.columns([1, 1, 3, 1], vertical_alignment="center")
+    with col_ra[0]:
+        ra_start = st.number_input("Start", min_value=1, max_value=aln_len, value=1, step=1, key="ra_start")
+    with col_ra[1]:
+        ra_end = st.number_input("End", min_value=1, max_value=aln_len, value=min(aln_len, 5), step=1, key="ra_end")
+    with col_ra[2]:
+        ra_text = st.text_input("Label", value="", key="ra_text", placeholder="e.g., active site region")
+    with col_ra[3]:
+        add_ra = st.button("Add", type="primary", key="ra_add")
+
+    if add_ra:
+        if not ra_text.strip():
+            st.error("Regional annotation label must not be empty.")
+        elif ra_start > ra_end:
+            st.error("Start must be <= End.")
+        else:
+            ann = RegionalAnnotation(
+                start=int(ra_start),
+                end=int(ra_end),
+                text=ra_text.strip(),
+                ann_id=uuid4().hex,
+                color=None,
+            )
+            run.regional_annotations.append(ann)
+            run_log(run, "regional_annotation_added", {"start": ann.start, "end": ann.end, "text": ann.text})
+            st.rerun()
+
+    if run.regional_annotations:
+        st.markdown("Existing intervals:")
+        regs = sorted(run.regional_annotations, key=lambda r: (r.start, r.end, r.text, r.ann_id))
+        for r in regs:
+            c = st.columns([4, 1], vertical_alignment="center")
+            with c[0]:
+                st.write(f"[{r.start}, {r.end}] — {r.text}")
+            with c[1]:
+                if st.button("Delete", key=f"ra_del_{r.ann_id}"):
+                    run.regional_annotations = [z for z in run.regional_annotations if z.ann_id != r.ann_id]
+                    run_log(run, "regional_annotation_deleted", {"ann_id": r.ann_id})
+                    st.rerun()
+    else:
+        st.caption("No regional annotations yet.")
+
+    st.divider()
+
+    st.markdown("**Amino-acid notes (hover)**")
+    aa_choices = AA20 + [GAP]
+
+    with st.form(key="aa_note_form", clear_on_submit=True):
+        c = st.columns([1, 4, 1], vertical_alignment="center")
+        with c[0]:
+            aa_sel = st.selectbox("AA", options=aa_choices, index=aa_choices.index("V") if "V" in aa_choices else 0)
+        with c[1]:
+            aa_note_text = st.text_input(
+                "Note text",
+                value="",
+                placeholder="e.g., take property X into account",
+            )
+        with c[2]:
+            submitted = st.form_submit_button("Add note")
+
+        if submitted:
+            try:
+                k = normalize_aa_key(aa_sel)
+            except ValueError as e:
+                st.error(str(e))
+            else:
+                t = aa_note_text.strip()
+                if not t:
+                    st.error("Note text must not be empty.")
+                else:
+                    note = AminoAcidNote(note_id=uuid4().hex, text=t)
+                    run.aa_annotations.setdefault(k, []).append(note)
+                    run_log(run, "aa_note_added", {"aa": k, "note_id": note.note_id})
+                    st.rerun()
+
+    if run.aa_annotations:
+        st.markdown("Existing AA notes (grouped):")
+        for k in AA20 + [GAP]:
+            notes = run.aa_annotations.get(k, [])
+            if not notes:
+                continue
+            st.markdown(f"**{k}**")
+            for n in notes:
+                row = st.columns([6, 1], vertical_alignment="center")
+                with row[0]:
+                    st.write(n.text)
+                with row[1]:
+                    if st.button("Delete", key=f"aa_note_del_{k}_{n.note_id}"):
+                        run.aa_annotations[k] = [x for x in run.aa_annotations[k] if x.note_id != n.note_id]
+                        if not run.aa_annotations[k]:
+                            run.aa_annotations.pop(k, None)
+                        run_log(run, "aa_note_deleted", {"aa": k, "note_id": n.note_id})
+                        st.rerun()
+    else:
+        st.caption("No AA notes yet.")
+
+
+# ---- Plot helpers (1/2) ----
 def _add_iqr_band_and_median(
     fig: go.Figure,
     *,
@@ -168,7 +314,7 @@ def _add_iqr_band_and_median(
             mode="lines",
             name="P75",
             showlegend=False,
-            hovertemplate="col=%{x}<br>P75=%{y:.6f}<extra></extra>",
+            hovertemplate="position=%{x}<br>P75=%{y:.6f}<extra></extra>",
         )
     )
     fig.add_trace(
@@ -178,7 +324,7 @@ def _add_iqr_band_and_median(
             mode="lines",
             name="IQR (P25–P75)",
             fill="tonexty",
-            hovertemplate="col=%{x}<br>P25=%{y:.6f}<extra></extra>",
+            hovertemplate="position=%{x}<br>P25=%{y:.6f}<extra></extra>",
         )
     )
     fig.add_trace(
@@ -187,7 +333,7 @@ def _add_iqr_band_and_median(
             y=median,
             mode="lines",
             name=median_name,
-            hovertemplate="col=%{x}<br>median=%{y:.6f}<extra></extra>",
+            hovertemplate="position=%{x}<br>median=%{y:.6f}<extra></extra>",
         )
     )
 
@@ -212,7 +358,7 @@ def _plot_delta(
                     mode="lines",
                     name=f"{pair_prefix} {_pair_label(key)}",
                     hovertemplate=(
-                        "col=%{x}<br>"
+                        "position=%{x}<br>"
                         "|Δ|=%{y:.6f}<br>"
                         f"pair={_pair_label(key)}"
                         "<extra></extra>"
@@ -244,14 +390,15 @@ def _plot_delta(
 
 
 # ---- Plot 1 ----
-_plot_header_with_info(
+_plot_header(
     f"Pairwise Absolute Hydropathy Differences ({p.hp_scale_id})",
     (
-        "**What this shows**  \n"
         "- For each alignment column: pairwise absolute differences **|ΔHP|** between all sequence pairs.  \n"
         "- Summary: **Median(|ΔHP|)** with **IQR band (P25–P75)** across all pairs.  \n"
         "- **Gaps are treated as value 0** for HP."
     ),
+    show_titles=show_plot_titles,
+    show_infos=show_plot_infos,
 )
 fig_hp = _plot_delta(
     pairwise=p.hp_pairwise_delta,
@@ -264,14 +411,15 @@ fig_hp = _plot_delta(
 st.plotly_chart(fig_hp, width="stretch")
 
 # ---- Plot 2 ----
-_plot_header_with_info(
+_plot_header(
     f"Pairwise Absolute Polar Requirement Differences ({p.pr_scale_id})",
     (
-        "**What this shows**  \n"
         "- For each alignment column: pairwise absolute differences **|ΔPR|** between all sequence pairs.  \n"
         "- Summary: **Median(|ΔPR|)** with **IQR band (P25–P75)** across all pairs.  \n"
         "- **Gaps are treated as value 0** for PR."
     ),
+    show_titles=show_plot_titles,
+    show_infos=show_plot_infos,
 )
 fig_pr = _plot_delta(
     pairwise=p.pr_pairwise_delta,
@@ -283,15 +431,16 @@ fig_pr = _plot_delta(
 )
 st.plotly_chart(fig_pr, width="stretch")
 
-# ---- Plot 3 ----
-_plot_header_with_info(
+# ---- Plot 3: subplot with regional track + composition ----
+_plot_header(
     "Amino Acid Frequencies per Alignment Position",
     (
-        "**What this shows**  \n"
-        "- For each alignment position, the stacked bar shows the relative frequencies of amino acids (and gaps) observed at that position.  \n"
-        "- Hover lists only show amino acids actually present at that position and which sequences contribute them.  \n"
-        "- Gap bars are **grey with 30% opacity**."
+        "- Bottom track: stacked fractions of **amino acids + gaps** per alignment position.  \n"
+        "- Top track: **regional annotations** (intervals) placed into lanes to avoid overlap.  \n"
+        "- Hover includes **Amino acid note** and **Regional annotation** sections."
     ),
+    show_titles=show_plot_titles,
+    show_infos=show_plot_infos,
 )
 
 comp = p.composition_fraction
@@ -341,8 +490,107 @@ for col in range(L):
         m.setdefault(sym, []).append(nm)
     column_symbol_to_names.append(m)
 
-fig_c = go.Figure()
+fig_c = make_subplots(
+    rows=2,
+    cols=1,
+    shared_xaxes=True,
+    row_heights=[0.25, 0.75],
+    vertical_spacing=0.02,
+)
 
+# --- Top track: regional annotations ---
+assigned = lane_assign(run.regional_annotations)
+lane_count = 0 if not assigned else (max(l for _, l in assigned) + 1)
+
+for ann, lane in assigned:
+    x0 = ann.start - 0.5
+    x1 = ann.end + 0.5
+    y0 = float(lane)
+    y1 = float(lane) + 1.0
+
+    poly_x = [x0, x1, x1, x0, x0]
+    poly_y = [y0, y0, y1, y1, y0]
+
+    fig_c.add_trace(
+        go.Scatter(
+            x=poly_x,
+            y=poly_y,
+            mode="lines",
+            fill="toself",
+            showlegend=False,
+            line=dict(width=1),
+            hovertemplate=(
+                f"start: {ann.start}<br>"
+                f"end: {ann.end}<br>"
+                f"note: {ann.text}"
+                "<extra></extra>"
+            ),
+        ),
+        row=1,
+        col=1,
+    )
+
+    span = max(1, ann.end - ann.start + 1)
+    label_budget = max(0, span * 2 - 8)
+    mid_label = _truncate_label(ann.text, max_chars=label_budget)
+
+    fig_c.add_trace(
+        go.Scatter(
+            x=[ann.start - 0.35],
+            y=[y0 + 0.5],
+            mode="text",
+            text=[str(ann.start)],
+            textposition="middle left",
+            showlegend=False,
+            hoverinfo="skip",
+        ),
+        row=1,
+        col=1,
+    )
+
+    if span >= 2:
+        fig_c.add_trace(
+            go.Scatter(
+                x=[ann.end + 0.35],
+                y=[y0 + 0.5],
+                mode="text",
+                text=[str(ann.end)],
+                textposition="middle right",
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+    if mid_label:
+        fig_c.add_trace(
+            go.Scatter(
+                x=[(ann.start + ann.end) / 2],
+                y=[y0 + 0.5],
+                mode="text",
+                text=[mid_label],
+                textposition="middle center",
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+
+fig_c.update_yaxes(
+    showticklabels=False,
+    ticks="",
+    showgrid=False,
+    zeroline=False,
+    fixedrange=True,
+    title_text=None,
+    row=1,
+    col=1,
+)
+fig_c.update_yaxes(range=[0, max(1, lane_count)], row=1, col=1)
+
+# --- Bottom track: composition bars ---
 for sym in aa_gap_alphabet:
     yvals = comp[sym]
     if sym == "-":
@@ -353,7 +601,9 @@ for sym in aa_gap_alphabet:
                 name="gap",
                 marker=dict(color=GAP_COLOR),
                 hoverinfo="skip",
-            )
+            ),
+            row=2,
+            col=1,
         )
     else:
         fig_c.add_trace(
@@ -363,14 +613,19 @@ for sym in aa_gap_alphabet:
                 name=sym,
                 marker=dict(color=AA_COLOR.get(sym, DEFAULT_AA_COLOR)),
                 hoverinfo="skip",
-            )
+            ),
+            row=2,
+            col=1,
         )
 
+# Hover carrier
 hover_per_col: list[str] = []
 for i, pos in enumerate(x):
     lines = [f"<b>Position {pos}</b>"]
 
     present: list[tuple[str, float, list[str]]] = []
+    occurring_symbols: list[str] = []
+
     for sym in aa_gap_alphabet:
         names_here = column_symbol_to_names[i].get(sym, [])
         if not names_here:
@@ -378,11 +633,17 @@ for i, pos in enumerate(x):
         frac = comp[sym][i]
         label = "gap" if sym == "-" else sym
         present.append((label, frac, names_here))
+        occurring_symbols.append(sym)
 
     present.sort(key=lambda t: t[1], reverse=True)
-
     for label, frac, names_here in present:
         lines.append(f"{label}: {frac:.3f} — {_cap_list(names_here)}")
+
+    aa_block = build_aa_note_block(occurring_symbols=occurring_symbols, aa_annotations=run.aa_annotations)
+    lines.append(aa_block)
+
+    regs_here = _regions_covering_position(run.regional_annotations, int(pos))
+    lines.append(_format_region_hover_block(regs_here))
 
     hover_per_col.append("<br>".join(lines))
 
@@ -395,19 +656,21 @@ fig_c.add_trace(
         showlegend=False,
         customdata=hover_per_col,
         hovertemplate="%{customdata}<extra></extra>",
-    )
+    ),
+    row=2,
+    col=1,
 )
 
+fig_c.update_yaxes(range=[0, 1], fixedrange=True, title_text="AA Frequencies", row=2, col=1)
+fig_c.update_xaxes(fixedrange=False, title_text="Position", row=2, col=1)
+
 fig_c.update_layout(
-    xaxis_title="Position",
-    yaxis_title="AA Frequencies",
     barmode="stack",
     hovermode="x unified",
     hoverlabel=dict(namelength=-1),
-    yaxis=dict(range=[0, 1], fixedrange=True),
-    xaxis=dict(fixedrange=False),
     uirevision=st.session_state["viz_uirevision"],
     showlegend=True,
 )
 apply_top_legend(fig_c)
+
 st.plotly_chart(fig_c, width="stretch")

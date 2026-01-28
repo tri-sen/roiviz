@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any
 import uuid
 
-
+from core.annotations import AminoAcidNote, RegionalAnnotation
 from core.models import AlignmentResult, ComputedProfiles, InputSet
 
 
@@ -79,6 +79,12 @@ class RunState:
     inputs_locked: bool = False
     alignment_locked: bool = False
     profiles_locked: bool = False
+
+    # --- Annotations persisted across reruns ---
+    regional_annotations: list[RegionalAnnotation] = field(default_factory=list)
+
+    # AA key ("A".."Y" or "-") -> list of note entries
+    aa_annotations: dict[str, list[AminoAcidNote]] = field(default_factory=dict)
 
     @classmethod
     def new(cls) -> "RunState":

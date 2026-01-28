@@ -77,12 +77,6 @@ st.subheader("Draft inputs")
 
 draft = _get_draft()
 
-col_a, col_b = st.columns([1, 1], vertical_alignment="center")
-with col_a:
-    st.button("Add entry", on_click=_add_draft_row, disabled=(len(draft) >= 10))
-with col_b:
-    st.caption("Minimum 2, maximum 10 entries. No FASTA parsing yet (manual AA only).")
-
 all_valid = True
 valid_count = 0
 validation_messages: list[str] = []
@@ -117,6 +111,13 @@ for idx, item in enumerate(draft):
             if not seq_res.ok:
                 st.error(seq_res.error)
                 validation_messages.append(f"Entry {idx+1}: {seq_res.error}")
+
+col_a, col_b = st.columns([1, 1], vertical_alignment="center")
+with col_a:
+    st.button("Add entry", on_click=_add_draft_row, disabled=(len(draft) >= 10))
+with col_b:
+    st.caption("Minimum 2, maximum 10 entries. No FASTA parsing yet (manual AA only).")
+
 
 st.divider()
 st.subheader("Commit")
