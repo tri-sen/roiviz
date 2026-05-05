@@ -1,99 +1,159 @@
-# core/state.py
-"""
-Core state model.
-
-Rules:
-- core/ must not import streamlit.
-- RunState is the single source of truth, stored by the UI under st.session_state["run"].
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Any
 import uuid
+from datetime import UTC, datetime
 
-from core.annotations import AminoAcidNote, RegionalAnnotation
-from core.models import AlignmentResult, ComputedProfiles, InputSet
+import streamlit as st
 
-
-def utc_now() -> datetime:
-    """Timezone-aware UTC timestamp helper."""
-    return datetime.now(timezone.utc)
-
-
-class Phase(str, Enum):
-    INPUT = "input"
-    ALIGNMENT = "alignment"
-    VISUALIZATION = "visualization"
+from core.analysis_session_models import (
+    AlignmentStage,
+    AlignmentStatus,
+    AnalysisSession,
+    AnalysisStage,
+)
+from core.constants import STANDARD_AMINO_ACIDS
+from core.provenance_log import append_event
 
 
-@dataclass(frozen=True, slots=True)
-class LogEvent:
-    """
-    Append-only event record for reproducibility / transparency.
-
-    Keep this small:
-    - data should be JSON-serializable (or stringified in export).
-    """
-
-    ts_utc: datetime
-    level: str
-    event: str
-    data: dict[str, Any]
-
-    @classmethod
-    def now(cls, *, level: str, event: str, data: dict[str, Any]) -> "LogEvent":
-        return cls(ts_utc=utc_now(), level=level, event=event, data=data)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ts": self.ts_utc.isoformat(timespec="seconds"),
-            "level": self.level,
-            "event": self.event,
-            "data": self.data,
-        }
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-@dataclass(slots=True)
-class RunState:
-    """
-    Single-run state for one analysis session.
-    """
+def create_new_session() -> AnalysisSession:
+    session_id = f"session_{uuid.uuid4().hex[:12]}"
+    now = _utc_now()
+    return AnalysisSession(id=session_id, created_at=now, updated_at=now)
 
-    run_id: str
-    created_at_utc: datetime
-    phase: Phase = Phase.INPUT
 
-    # Append-only reproducibility log (in-memory)
-    events: list[LogEvent] = field(default_factory=list)
+def get_session() -> AnalysisSession:
+    return st.session_state["session"]
 
-    # Committed artifacts
-    input_set: InputSet | None = None
-    alignment_result: AlignmentResult | None = None
-    computed_profiles: ComputedProfiles | None = None
 
-    # Simple single-run locks
-    inputs_locked: bool = False
-    alignment_locked: bool = False
-    profiles_locked: bool = False
+_VALID_AAS: frozenset[str] = frozenset(STANDARD_AMINO_ACIDS)
 
-    # --- Annotations persisted across reruns ---
-    regional_annotations: list[RegionalAnnotation] = field(default_factory=list)
 
-    # AA key ("A".."Y" or "-") -> list of note entries
-    aa_annotations: dict[str, list[AminoAcidNote]] = field(default_factory=dict)
+def has_valid_input(session: AnalysisSession) -> bool:
+    seqs = session.input_stage.selected_sequences
+    if not (2 <= len(seqs) <= 6):
+        return False
+    names = [s.name.strip() for s in seqs]
+    if len(names) != len(set(names)):
+        return False
+    for s in seqs:
+        if not s.sequence or not all(c in _VALID_AAS for c in s.sequence):
+            return False
+    return True
 
-    @classmethod
-    def new(cls) -> "RunState":
-        return cls(
-            run_id=uuid.uuid4().hex,
-            created_at_utc=utc_now(),
-            phase=Phase.INPUT,
+
+def has_valid_alignment(session: AnalysisSession) -> bool:
+    stage = session.alignment_stage
+    if stage.status != AlignmentStatus.SUCCESS:
+        return False
+    aligned = stage.aligned_sequences
+    if len(aligned) != len(session.input_stage.selected_sequences):
+        return False
+    if len({len(a.aligned_sequence) for a in aligned}) != 1:
+        return False
+    input_ids = {s.id for s in session.input_stage.selected_sequences}
+    return all(a.input_sequence_id in input_ids for a in aligned)
+
+
+def has_computed_profiles(session: AnalysisSession) -> bool:
+    return session.analysis_stage.computed_profiles is not None
+
+
+def clear_alignment_and_analysis(session: AnalysisSession) -> None:
+    session.alignment_stage = AlignmentStage()
+    session.analysis_stage = AnalysisStage()
+    append_event(session, "downstream_state_cleared", {
+        "reason": "input_changed",
+        "cleared_alignment": True,
+        "cleared_analysis": True,
+        "cleared_annotations": True,
+    })
+    update_session_timestamp(session)
+    mark_session_changed()
+
+
+def _input_is_editing() -> bool:
+    """Returns True if the user is currently editing the input stage."""
+    return bool(st.session_state.get("ui_input_editing", False))
+
+
+def is_stage_reachable(session: AnalysisSession, stage_key: str) -> bool:
+    """Returns True if the user can navigate to this stage."""
+    if stage_key == "input":
+        return True
+    if stage_key == "alignment":
+        return has_valid_input(session) and not _input_is_editing()
+    if stage_key == "analysis":
+        return has_valid_alignment(session)
+    return False
+
+
+def is_stage_locked(session: AnalysisSession, stage_key: str) -> bool:
+    if stage_key == "input":
+        return has_valid_input(session) and (
+            has_valid_alignment(session) or has_computed_profiles(session)
         )
+    if stage_key == "alignment":
+        return has_valid_alignment(session) and has_computed_profiles(session)
+    return False
 
-    def log(self, *, event: str, data: dict[str, Any] | None = None, level: str = "INFO") -> None:
-        """Single entry point: adds timestamp automatically."""
-        self.events.append(LogEvent.now(level=level, event=event, data=data or {}))
+
+def is_stage_editable(session: AnalysisSession, stage_key: str) -> bool:
+    return is_stage_reachable(session, stage_key) and not is_stage_locked(session, stage_key)
+
+
+def get_stage_status(session: AnalysisSession, stage_key: str) -> str:
+    """Returns a display status string for the workflow indicator.
+
+    Returns one of: Not started, Incomplete, Ready, Complete, Locked, Error.
+    """
+    if stage_key == "input":
+        seqs = session.input_stage.selected_sequences
+        if len(seqs) == 0:
+            return "Not started"
+        if not has_valid_input(session):
+            return "Incomplete"
+        if has_valid_alignment(session) or has_computed_profiles(session):
+            return "Locked"
+        return "Ready"
+    if stage_key == "alignment":
+        stage = session.alignment_stage
+        if stage.status == AlignmentStatus.ERROR:
+            return "Error"
+        if stage.status == AlignmentStatus.SUCCESS and has_valid_alignment(session):
+            if has_computed_profiles(session):
+                return "Locked"
+            return "Complete"
+        if has_valid_input(session) and not _input_is_editing():
+            return "Ready"
+        return "Not started"
+    if stage_key == "analysis":
+        if has_computed_profiles(session):
+            return "Complete"
+        if has_valid_alignment(session):
+            return "Ready"
+        return "Not started"
+    return "Not started"
+
+
+def update_session_timestamp(session: AnalysisSession) -> None:
+    session.updated_at = _utc_now()
+
+
+def mark_session_changed() -> None:
+    st.session_state["ui_session_changed"] = True
+
+
+def set_feedback(feedback_type: str, message: str) -> None:
+    st.session_state["ui_feedback"] = {"type": feedback_type, "message": message}
+
+
+def get_feedback() -> dict | None:
+    return st.session_state.get("ui_feedback")
+
+
+def clear_feedback() -> None:
+    st.session_state.pop("ui_feedback", None)

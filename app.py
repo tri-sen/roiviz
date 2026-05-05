@@ -1,59 +1,57 @@
-# app.py
-"""
-Streamlit entry point.
-
-Responsibilities:
-- Initialize exactly one RunState in st.session_state["run"].
-- Render the shared sidebar on this page as well.
-- Provide a minimal "app" home view showing run summary + full event table.
-
-Notes:
-- All sidebar UI is centralized in pages/sidebar.py.
-- Run creation + mandatory session_start logging is centralized in core/run_factory.py.
-"""
-
-from __future__ import annotations
-
 import streamlit as st
 
-from core.run_factory import create_new_run
-from core.state import RunState
-from ui.sidebar import render_sidebar
+from core.analysis_session_io import export_session_to_json
 
+st.set_page_config(page_title="Protein Sequence Analysis", layout="wide")
 
-def _get_run() -> RunState:
-    run = st.session_state.get("run")
-    if run is None:
-        run = create_new_run()
-        st.session_state["run"] = run
-    return run
+pg = st.navigation(
+    [
+        st.Page("home.py", title="Home", default=True),
+        st.Page("pages/1_Input.py", title="Input"),
+        st.Page("pages/2_Alignment.py", title="Alignment"),
+        st.Page("pages/3_Analysis.py", title="Analysis"),
+    ],
+    position="hidden",
+)
 
+with st.sidebar:
+    st.subheader("Session")
+    _sidebar_session = st.session_state.get("session")
+    if _sidebar_session is None:
+        st.caption("No active session to export.")
+    else:
+        if st.button(
+            "Export current session",
+            key="ui_sidebar_export_btn",
+            help=(
+                "Export the canonical analysis_session.json file. "
+                "This file can be imported later to reload the analysis session. "
+                "Derived CSV, FASTA, and provenance exports are inspection/report files "
+                "and are not reload formats."
+            ),
+        ):
+            _json_str = export_session_to_json(_sidebar_session)
+            if _json_str is not None:
+                st.session_state["ui_sidebar_export_json"] = _json_str
+                st.session_state["ui_session_changed"] = False
+            else:
+                st.session_state.pop("ui_sidebar_export_json", None)
+                st.session_state["ui_sidebar_export_error"] = (
+                    "Export failed: session is not in a valid state."
+                )
+            st.rerun()
+        if _export_err := st.session_state.pop("ui_sidebar_export_error", None):
+            st.error(_export_err)
+        if _export_json := st.session_state.get("ui_sidebar_export_json"):
+            st.download_button(
+                label="Download analysis_session.json",
+                data=_export_json,
+                file_name=f"session_{_sidebar_session.id}.json",
+                mime="application/json",
+                key="ui_sidebar_export_dl",
+            )
 
-def main() -> None:
-    st.set_page_config(page_title="roiviz", layout="wide")
+    st.subheader("Display")
+    st.checkbox("Show processing history", value=False, key="show_processing_history")
 
-    run = _get_run()
-
-    # Shared sidebar (available on all pages)
-    render_sidebar(create_new_run)
-
-    st.title("roiviz")
-    st.info("Foundation: RunState + in-memory reproducibility log. No MAFFT/profiles/export yet (except log download).")
-
-    st.subheader("Current run summary")
-    st.json(
-        {
-            "run_id": run.run_id,
-            "phase": run.phase.value,
-            "created_at_utc": run.created_at_utc.isoformat(timespec="seconds"),
-            "event_count": len(run.events),
-            "inputs_committed": run.input_set is not None,
-        }
-    )
-
-    st.subheader("All events")
-    st.dataframe([e.to_dict() for e in run.events], width="stretch")
-
-
-if __name__ == "__main__":
-    main()
+pg.run()
